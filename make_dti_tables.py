@@ -5,11 +5,15 @@ import pandas as pd
 # ==========================================
 # 1. 設定項目
 # ==========================================
+# ワーキングディレクトリの指定と移動
+WORK_DIR = "../dwi/dti/TBSS58/stats/"
+os.chdir(WORK_DIR)
+
 THRESHOLD = 0.95 # p < 0.05
 SKELETON_MASK = "mean_FA_skeleton_mask.nii.gz"
 FSLDIR = os.environ.get('FSLDIR', '/usr/local/fsl')
 
-# 新しい出力先ディレクトリの作成
+# 新しい出力先ディレクトリの作成（statsディレクトリ内に作成されます）
 OUT_DIR = "TBSS_Tract_Results"
 os.makedirs(OUT_DIR, exist_ok=True)
 
@@ -18,10 +22,10 @@ ATLAS_FILE = f"{FSLDIR}/data/atlases/JHU/JHU-ICBM-tracts-maxprob-thr25-1mm.nii.g
 
 # 読み込むファイル名（プレフィックス）の設定
 file_names = {
-    'FA': {'pval': 'tbss_tfce_corrp_tstat1.nii.gz', 'tstat': 'tbss_tstat1.nii.gz'},
-    'MD': {'pval': 'tbss_MD_tfce_corrp_tstat1.nii.gz', 'tstat': 'tbss_MD_tstat1.nii.gz'},
-    'AD': {'pval': 'tbss_AD_tfce_corrp_tstat1.nii.gz', 'tstat': 'tbss_AD_tstat1.nii.gz'},
-    'RD': {'pval': 'tbss_RD_tfce_corrp_tstat1.nii.gz', 'tstat': 'tbss_RD_tstat1.nii.gz'}
+    'FA': {'pval': 'tbssFA_tfce_corrp_tstat1.nii.gz', 'tstat': 'tbssFA_tstat1.nii.gz'},
+    'MD': {'pval': 'tbssMD_tfce_corrp_tstat1.nii.gz', 'tstat': 'tbssMD_tstat1.nii.gz'},
+    'AD': {'pval': 'tbssL1_tfce_corrp_tstat1.nii.gz', 'tstat': 'tbssL1_tstat1.nii.gz'},
+    'RD': {'pval': 'tbssRD_tfce_corrp_tstat1.nii.gz', 'tstat': 'tbssRD_tstat1.nii.gz'}
 }
 
 def run_cmd(cmd):
@@ -31,16 +35,15 @@ def run_cmd(cmd):
 # ==========================================
 # 2. トラクト名の動的抽出 (JHU-tracts.xml)
 # ==========================================
+print(f"Working Directory: {os.getcwd()}")
 print("--- Extracting Tract Labels ---")
 txt_path = os.path.join(OUT_DIR, "labels_tracts.txt")
-# ご提示のコマンドを実行（atlass -> atlases に修正済）
 extract_cmd = f'cat {FSLDIR}/data/atlases/JHU-tracts.xml | grep label | cut -d ">" -f 2 | cut -d "<" -f 1 > {txt_path}'
 run_cmd(extract_cmd)
 
 # 抽出したテキストファイルを読み込み、辞書を作成
 jhu_labels = {}
 with open(txt_path, "r") as f:
-    # XMLのindexは0から始まりますが、画像(NIfTI)の画素値は1から始まるため、start=1で対応させます
     for idx, line in enumerate(f, start=1):
         name = line.strip()
         if name:
@@ -72,7 +75,6 @@ for metric, files in file_names.items():
     results = []
 
     for idx, tract_name in jhu_labels.items():
-        # 一時ファイルも全て出力先ディレクトリ内に作成
         tract_raw = os.path.join(OUT_DIR, f"temp_raw_{idx}.nii.gz")
         tract_skel = os.path.join(OUT_DIR, f"temp_skel_{idx}.nii.gz")
         tract_sig = os.path.join(OUT_DIR, f"temp_sig_tract_{idx}.nii.gz")
@@ -98,7 +100,7 @@ for metric, files in file_names.items():
             
             # clusterコマンドを利用してMNI座標と最大t値を抽出
             cluster_out = run_cmd(f"cluster -i {tract_sig} -t 0.5 --cope={tstat_file} --mm")
-            lines = cluster_out.split('\n')[1:] # 1行目のヘッダーを飛ばす
+            lines = cluster_out.split('\n')[1:] 
             
             best_t = -1
             best_coords = ""
@@ -106,10 +108,14 @@ for metric, files in file_names.items():
             for line in lines:
                 if not line.strip(): continue
                 parts = line.split()
-                t_val = float(parts[2])
-                if t_val > best_t:
-                    best_t = t_val
-                    best_coords = f"{parts[3]}, {parts[4]}, {parts[5]}"
+                # 修正ポイント: 
+                # --copeオプション使用時の列の構成に対応
+                # parts[2] は入力画像の最大値(1)、parts[9]がCOPE(t値)の最大値、10〜12がそのMNI座標です。
+                if len(parts) >= 13:
+                    t_val = float(parts[9])
+                    if t_val > best_t:
+                        best_t = t_val
+                        best_coords = f"{parts[10]}, {parts[11]}, {parts[12]}"
 
             results.append({
                 'Anatomical Tract': tract_name,
@@ -128,7 +134,6 @@ for metric, files in file_names.items():
     # データを整形してCSVに出力
     if results:
         df = pd.DataFrame(results)
-        # 割合（指標B）が高い順に並び替え
         df = df.sort_values(by='Percentage of Tract Affected (%)', ascending=False).reset_index(drop=True)
         
         csv_filename = os.path.join(OUT_DIR, f"TBSS_Results_Table_{metric}.csv")
